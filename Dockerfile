@@ -20,10 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Step 7: Expose the port your app runs on
-# This should match the port in your app.py (e.g., 5000 or 10000 on Render)
+# This should match the port in your app.py (e.g., 10000 on Render)
 EXPOSE 10000
 
 # Step 8: Define the command to run your application
-# Render will use this to start your Flask server.
-# Gunicorn is a production-ready web server for Python.
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
+# --- THIS IS THE UPDATED LINE ---
+# We've added a --timeout flag to give workers 5 minutes (300s) to complete a request.
+# We also added --log-level=debug to see more detailed server logs.
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "300", "--log-level", "debug", "app:app"]
