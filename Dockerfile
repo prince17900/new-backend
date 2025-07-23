@@ -21,5 +21,5 @@ EXPOSE 10000
 
 # Step 8: Define the command to run your application
 # --- THIS IS THE FINAL UPDATED LINE ---
-# We are forcing Gunicorn to use only 1 worker, which is crucial for low-memory environments.
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "300", "app:app"]
+# We are forcing Gunicorn to use 1 worker and explicitly stream all logs to the console.
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "300", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
