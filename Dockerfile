@@ -1,6 +1,6 @@
 # Step 1: Use an official Python runtime as a parent image
-# We're using a specific version for stability.
-FROM python:3.9-slim-buster
+# We're using "bullseye" which is a newer, supported version of Debian.
+FROM python:3.9-slim-bullseye
 
 # Step 2: Set the working directory in the container
 WORKDIR /app
