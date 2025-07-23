@@ -1,13 +1,10 @@
 # Step 1: Use an official Python runtime as a parent image
-# We're using "bullseye" which is a newer, supported version of Debian.
 FROM python:3.9-slim-bullseye
 
 # Step 2: Set the working directory in the container
 WORKDIR /app
 
 # Step 3: Update package list and install Ghostscript
-# This is where we get the permissions to install system packages.
-# -y confirms all prompts, and --no-install-recommends keeps the image small.
 RUN apt-get update && apt-get install -y --no-install-recommends ghostscript
 
 # Step 4: Copy the requirements file into the container
@@ -20,11 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Step 7: Expose the port your app runs on
-# This should match the port in your app.py (e.g., 10000 on Render)
 EXPOSE 10000
 
 # Step 8: Define the command to run your application
-# --- THIS IS THE UPDATED LINE ---
-# We've added a --timeout flag to give workers 5 minutes (300s) to complete a request.
-# We also added --log-level=debug to see more detailed server logs.
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "300", "--log-level", "debug", "app:app"]
+# --- THIS IS THE FINAL UPDATED LINE ---
+# We are forcing Gunicorn to use only 1 worker, which is crucial for low-memory environments.
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "1", "--timeout", "300", "app:app"]
