@@ -4,47 +4,41 @@ import os
 import subprocess
 import tempfile
 import logging
+import io
 
 # --- Basic Configuration ---
 app = Flask(__name__)
-# Allow all origins for simplicity. For production, you might want to restrict this.
-# e.g., CORS(app, resources={r"/compress": {"origins": ["https://compressfast.in", "http://127.0.0.1:5500"]}})
-CORS(app) 
-logging.basicConfig(level=logging.INFO)
+# Configure logging to be more verbose
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Allow all origins for simplicity during debugging.
+CORS(app)
+
+# --- NEW: Health Check Route ---
+# This helps us verify that the server is running.
+@app.route('/', methods=['GET'])
+def health_check():
+    app.logger.info("Health check endpoint was hit successfully.")
+    return jsonify({"status": "ok", "message": "Server is running"}), 200
 
 
 # --- Helper function to map frontend quality to Ghostscript settings ---
 def get_gs_quality_setting(quality_value):
-    """
-    Maps a numeric quality value (1-10 from your frontend) to a Ghostscript
-    -dPDFSETTINGS preset.
-    
-    - /screen: Low quality, low size (72 dpi) - Good for max compression
-    - /ebook: Medium quality, medium size (150 dpi)
-    - /printer: High quality, large size (300 dpi)
-    - /default: Similar to /printer, good for general use
-    """
     try:
         quality = int(quality_value)
     except (ValueError, TypeError):
-        return '/ebook' # Default to medium if value is invalid
+        return '/ebook' # Default to medium
 
     if quality <= 3:
-        return '/screen'  # Low quality (max compression)
+        return '/screen'
     elif quality <= 7:
-        return '/ebook'   # Medium quality
+        return '/ebook'
     else:
-        return '/printer' # High quality (less compression)
+        return '/printer'
 
 
-# --- The new PDF compression function using Ghostscript ---
+# --- The Ghostscript compression function ---
 def compress_with_ghostscript(input_stream, quality_setting):
-    """
-    Compresses a PDF using the Ghostscript command-line tool.
-    This function creates temporary files to handle the input and output
-    for the subprocess command.
-    """
-    # Create temporary files with .pdf extension so Ghostscript recognizes them
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_input:
         temp_input.write(input_stream.read())
         input_path = temp_input.name
@@ -52,87 +46,75 @@ def compress_with_ghostscript(input_stream, quality_setting):
     output_path = tempfile.mktemp(suffix=".pdf")
 
     try:
-        # --- This is the Ghostscript command ---
-        # It takes an input file, sets the compatibility and quality, and specifies an output file.
         command = [
-            'gs',
-            '-sDEVICE=pdfwrite',
-            '-dCompatibilityLevel=1.4',
-            f'-dPDFSETTINGS={quality_setting}',
-            '-dNOPAUSE',
-            '-dQUIET',
-            '-dBATCH',
-            f'-sOutputFile={output_path}',
-            input_path
+            'gs', '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
+            f'-dPDFSETTINGS={quality_setting}', '-dNOPAUSE', '-dQUIET',
+            '-dBATCH', f'-sOutputFile={output_path}', input_path
         ]
+        app.logger.info(f"Running Ghostscript command: {' '.join(command)}")
         
-        app.logger.info(f"Running Ghostscript with command: {' '.join(command)}")
-        
-        # Execute the command
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        # Increased timeout to 5 minutes (300 seconds) for large files
+        subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)
         
         app.logger.info("Ghostscript compression successful.")
-
-        # Read the compressed file's data into memory
         with open(output_path, 'rb') as f:
-            compressed_data = f.read()
-        
-        return compressed_data
+            return f.read()
 
-    except subprocess.CalledProcessError as e:
-        # Log errors if Ghostscript fails
-        app.logger.error("Ghostscript failed to compress the PDF.")
-        app.logger.error(f"Stderr: {e.stderr}")
-        app.logger.error(f"Stdout: {e.stdout}")
-        return None
-    except FileNotFoundError:
-        # This error means Ghostscript is not installed or not in the system's PATH
-        app.logger.error("Ghostscript not found. Please ensure it is installed on the server.")
-        return None
     finally:
-        # Clean up the temporary files
         if os.path.exists(input_path):
             os.remove(input_path)
         if os.path.exists(output_path):
             os.remove(output_path)
 
 
-# --- Your updated Flask route ---
+# --- Your updated Flask route with better error handling ---
 @app.route('/compress', methods=['POST'])
 def compress_route():
-    app.logger.info("Received request for /compress endpoint.")
+    # This log should ALWAYS appear if the request reaches the app
+    app.logger.info("--- Received request for /compress endpoint ---")
 
-    if 'pdf' not in request.files:
-        app.logger.warning("No PDF file found in the request.")
-        return jsonify({"error": "No PDF file part"}), 400
+    try:
+        if 'pdf' not in request.files:
+            app.logger.warning("Request is missing the 'pdf' file part.")
+            return jsonify({"error": "No PDF file part"}), 400
 
-    pdf_file = request.files['pdf']
-    if pdf_file.filename == '':
-        app.logger.warning("No PDF file selected.")
-        return jsonify({"error": "No selected file"}), 400
+        pdf_file = request.files['pdf']
+        quality_value = request.form.get('quality', '5')
+        gs_setting = get_gs_quality_setting(quality_value)
+        
+        app.logger.info(f"File '{pdf_file.filename}' received. Compressing with setting: {gs_setting}")
 
-    # Get the quality value from the form (1-10)
-    quality_value = request.form.get('quality', '5') # Default to 5 (medium)
-    gs_setting = get_gs_quality_setting(quality_value)
-    
-    app.logger.info(f"Compressing with quality value: {quality_value} -> GS setting: {gs_setting}")
+        compressed_pdf_data = compress_with_ghostscript(pdf_file.stream, gs_setting)
 
-    # Compress the PDF using the new function
-    compressed_pdf_data = compress_with_ghostscript(pdf_file.stream, gs_setting)
+        if compressed_pdf_data is None:
+             # This case should ideally not be hit due to the check=True in subprocess
+            app.logger.error("Compression returned None, which indicates an issue.")
+            return jsonify({"error": "Compression failed to produce a file."}), 500
+        
+        app.logger.info("Successfully compressed file. Sending response.")
+        return send_file(
+            io.BytesIO(compressed_pdf_data),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name='compressed.pdf'
+        )
 
-    if compressed_pdf_data is None:
-        return jsonify({"error": "PDF compression failed on the server."}), 500
+    except subprocess.TimeoutExpired:
+        app.logger.error("Ghostscript command timed out. The PDF might be too large or complex.")
+        return jsonify({"error": "Processing timed out. The file may be too large."}), 408
 
-    # Send the compressed file back to the user
-    return send_file(
-        io.BytesIO(compressed_pdf_data),
-        mimetype='application/pdf',
-        as_attachment=True,
-        download_name='compressed.pdf'
-    )
+    except subprocess.CalledProcessError as e:
+        app.logger.error("Ghostscript failed with an error.")
+        app.logger.error(f"Ghostscript Stderr: {e.stderr}")
+        return jsonify({"error": "Failed to process PDF with Ghostscript."}), 500
+
+    except Exception as e:
+        # Catch-all for any other unexpected errors
+        app.logger.error(f"An unexpected error occurred: {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected server error occurred."}), 500
+
 
 # --- Main entry point for the app ---
 if __name__ == '__main__':
-    # Render will set the PORT environment variable.
-    port = int(os.environ.get('PORT', 5000))
-    app.run(debug=True, host='0.0.0.0', port=port)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
